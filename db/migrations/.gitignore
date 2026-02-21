@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.env
+backend/.env
+frontend/mcq-ui/.env
+playwright-report/
+test-results/
+coverage/
+*.log
+*.tmp
+.DS_Store

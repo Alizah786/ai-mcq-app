@@ -1,0 +1,103 @@
+name: Playwright E2E
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "frontend/mcq-ui/e2e/**"
+      - "frontend/mcq-ui/playwright.config.js"
+      - "frontend/mcq-ui/src/**"
+      - "backend/**"
+      - ".github/workflows/playwright-e2e.yml"
+  pull_request:
+    paths:
+      - "frontend/mcq-ui/e2e/**"
+      - "frontend/mcq-ui/playwright.config.js"
+      - "frontend/mcq-ui/src/**"
+      - "backend/**"
+      - ".github/workflows/playwright-e2e.yml"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hidden-question
+            spec: e2e/hidden-question-student-visibility.spec.js
+          - name: disclaimer-ack
+            spec: e2e/disclaimer-ack-required.spec.js
+          - name: manager-toggle-hidden
+            spec: e2e/manager-toggle-hidden-question-ui.spec.js
+    defaults:
+      run:
+        shell: bash
+    env:
+      SQL_SERVER: ${{ secrets.SQL_SERVER }}
+      SQL_DATABASE: ${{ secrets.SQL_DATABASE }}
+      SQL_USER: ${{ secrets.SQL_USER }}
+      SQL_PASSWORD: ${{ secrets.SQL_PASSWORD }}
+      SQL_ENCRYPT: ${{ secrets.SQL_ENCRYPT }}
+      SQL_USE_WINDOWS_AUTH: "false"
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      PORT: "4000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/mcq-ui/package-lock.json
+
+      - name: Validate required secrets
+        id: precheck
+        run: |
+          missing=0
+          for key in SQL_SERVER SQL_DATABASE SQL_USER SQL_PASSWORD JWT_SECRET; do
+            if [ -z "${!key}" ]; then
+              echo "Missing required secret/env: $key"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "run_e2e=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping E2E because required DB/API secrets are not configured."
+          else
+            echo "run_e2e=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install backend deps
+        if: steps.precheck.outputs.run_e2e == 'true'
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend deps
+        if: steps.precheck.outputs.run_e2e == 'true'
+        working-directory: frontend/mcq-ui
+        run: npm ci
+
+      - name: Install Playwright browsers
+        if: steps.precheck.outputs.run_e2e == 'true'
+        working-directory: frontend/mcq-ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E
+        if: steps.precheck.outputs.run_e2e == 'true'
+        working-directory: frontend/mcq-ui
+        run: npm run test:e2e -- ${{ matrix.spec }}
+
+      - name: Upload Playwright report
+        if: always() && steps.precheck.outputs.run_e2e == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.name }}
+          path: frontend/mcq-ui/playwright-report
+          if-no-files-found: ignore
