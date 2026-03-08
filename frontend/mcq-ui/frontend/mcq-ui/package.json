@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "mcq-ui": "file:../.."
+  }
+}

@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest --runInBand",
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "seed-passwords": "node scripts/seed-passwords.js"
+    "long-grading-worker": "node scripts/longGradingWorker.js",
+    "study-materials-worker": "node scripts/studyMaterialsWorker.js",
+    "seed-passwords": "node scripts/seed-passwords.js",
+    "seed-pro-teacher-users": "node scripts/seed-pro-teacher-test-users.js",
+    "seed-pro-student-users": "node scripts/seed-pro-student-test-users.js"
   },
   "keywords": [],
   "author": "",
@@ -18,15 +22,19 @@
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
+    "mammoth": "^1.9.1",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
+    "pdf-parse": "^1.1.1",
     "stripe": "^20.3.1",
     "tedious": "^19.2.1",
     "xlsx": "^0.18.5",
+    "yauzl": "^3.2.0",
     "zod": "^4.3.6"
   },
   "description": "",
   "devDependencies": {
+    "jest": "^29.7.0",
     "nodemon": "^3.1.11"
   }
 }

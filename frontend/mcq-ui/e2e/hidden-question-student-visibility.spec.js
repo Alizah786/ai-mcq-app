@@ -1,26 +1,5 @@
-import { test, expect, request } from "@playwright/test";
-
-const API_BASE = process.env.E2E_API_URL || "http://127.0.0.1:4000";
-
-function uid() {
-  return `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-}
-
-async function apiJson(ctx, method, path, body, token) {
-  const res = await ctx.fetch(`${API_BASE}${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    data: body ?? undefined,
-  });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(`${method} ${path} failed (${res.status()}): ${JSON.stringify(payload)}`);
-  }
-  return payload;
-}
+import { test, expect } from "@playwright/test";
+import { apiJson, createApiContext, uid } from "./helpers";
 
 test("student cannot see manager-hidden question in quiz attempt", async ({ page }) => {
   const suffix = uid();
@@ -34,7 +13,9 @@ test("student cannot see manager-hidden question in quiz attempt", async ({ page
   const hiddenQuestionText = "Hidden question for student should not appear";
   const visibleQuestionText = "Visible question should appear to student";
 
-  const api = await request.newContext();
+  const api = await createApiContext();
+  const signupDisclaimer = await apiJson(api, "GET", "/api/auth/signup-disclaimer");
+  const signupDisclaimerId = Number(signupDisclaimer?.general?.DisclaimerId || 0) || undefined;
 
   // 1) Create manager
   await apiJson(api, "POST", "/api/auth/signup", {
@@ -42,6 +23,8 @@ test("student cannot see manager-hidden question in quiz attempt", async ({ page
     email: managerEmail,
     fullName: `Manager ${suffix}`,
     password: managerPassword,
+    disclaimerAcknowledged: true,
+    ...(signupDisclaimerId ? { disclaimerId: signupDisclaimerId } : {}),
   });
 
   // 2) Manager login
@@ -85,6 +68,9 @@ test("student cannot see manager-hidden question in quiz attempt", async ({ page
   expect(classId).toBeGreaterThan(0);
 
   // 5) Create draft quiz
+  const activeDisclaimers = await apiJson(api, "GET", "/api/disclaimers/active", null, managerToken);
+  const manualDisclaimerId = Number(activeDisclaimers?.manual?.DisclaimerId || 0);
+  expect(manualDisclaimerId).toBeGreaterThan(0);
   const createdQuiz = await apiJson(
     api,
     "POST",
@@ -92,6 +78,8 @@ test("student cannot see manager-hidden question in quiz attempt", async ({ page
     {
       title: quizTitle,
       description: "E2E hidden-question test",
+      disclaimerAcknowledged: true,
+      disclaimerId: manualDisclaimerId,
     },
     managerToken
   );
@@ -152,4 +140,6 @@ test("student cannot see manager-hidden question in quiz attempt", async ({ page
   await page.goto(`/quiz/${quizId}`);
   await expect(page.getByText(visibleQuestionText, { exact: false })).toBeVisible();
   await expect(page.getByText(hiddenQuestionText, { exact: false })).toHaveCount(0);
+  await expect(page.getByText("Hidden for students (teacher preview only)")).toHaveCount(0);
+  await expect(page.getByLabel("A. Alpha")).toBeVisible();
 });

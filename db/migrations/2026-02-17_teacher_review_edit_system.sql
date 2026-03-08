@@ -14,6 +14,8 @@
   Safe to run multiple times.
 */
 
+USE AiMcqApp;
+
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 

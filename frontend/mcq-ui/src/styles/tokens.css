@@ -1,0 +1,65 @@
+:root {
+  --font-sans: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Aptos Display", "Trebuchet MS", "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", monospace;
+
+  --text-strong: #14213d;
+  --text-primary: #24324a;
+  --text-secondary: #596579;
+  --text-muted: #6f7b8f;
+  --text-inverse: #f8fafc;
+
+  --surface-page: #f4f7fb;
+  --surface-panel: #ffffff;
+  --surface-panel-alt: #eef3f9;
+  --surface-quiet: #f8fafc;
+  --surface-accent: #eaf3ff;
+
+  --border-subtle: #d9e2ec;
+  --border-default: #c7d3e0;
+  --border-strong: #9cb0c5;
+
+  --accent-50: #eef6ff;
+  --accent-100: #dbeafe;
+  --accent-500: #2563eb;
+  --accent-600: #1d4ed8;
+  --accent-700: #1e40af;
+
+  --success-50: #ecfdf5;
+  --success-500: #16a34a;
+  --success-700: #166534;
+
+  --warning-50: #fff7ed;
+  --warning-500: #ea580c;
+  --warning-700: #9a3412;
+
+  --danger-50: #fef2f2;
+  --danger-500: #dc2626;
+  --danger-700: #991b1b;
+
+  --shadow-soft: 0 8px 24px rgba(20, 33, 61, 0.06);
+  --shadow-medium: 0 14px 40px rgba(20, 33, 61, 0.1);
+
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-pill: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 30px;
+  --text-3xl: 42px;
+}

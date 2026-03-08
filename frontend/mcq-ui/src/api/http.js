@@ -21,7 +21,12 @@ function getHeaders() {
 
 async function handleResponse(response) {
   if (response.status === 401) {
-    onUnauthorized();
+    const hasStoredAuth =
+      typeof window !== "undefined" &&
+      !!window.localStorage.getItem("ai-mcq-auth");
+    if (hasStoredAuth) {
+      onUnauthorized();
+    }
     const error = await response.json().catch(() => ({}));
     const e = new Error(error.message || "Session expired");
     e.status = 401;
@@ -54,6 +59,7 @@ export async function apiGet(endpoint) {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "GET",
     headers: getHeaders(),
+    cache: "no-store",
   });
   return handleResponse(response);
 }
@@ -71,6 +77,15 @@ export async function apiDelete(endpoint) {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "DELETE",
     headers: getHeaders(),
+  });
+  return handleResponse(response);
+}
+
+export async function apiPatch(endpoint, body) {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: "PATCH",
+    headers: getHeaders(),
+    body: JSON.stringify(body),
   });
   return handleResponse(response);
 }

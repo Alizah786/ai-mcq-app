@@ -1,26 +1,5 @@
-import { test, expect, request } from "@playwright/test";
-
-const API_BASE = process.env.E2E_API_URL || "http://127.0.0.1:4000";
-
-function uid() {
-  return `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-}
-
-async function apiJson(ctx, method, path, body, token) {
-  const res = await ctx.fetch(`${API_BASE}${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    data: body ?? undefined,
-  });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(`${method} ${path} failed (${res.status()}): ${JSON.stringify(payload)}`);
-  }
-  return payload;
-}
+import { test, expect } from "@playwright/test";
+import { apiJson, createApiContext, uid } from "./helpers";
 
 test("manager can toggle hide-for-student checkbox on quiz screen", async ({ page }) => {
   const suffix = uid();
@@ -33,7 +12,9 @@ test("manager can toggle hide-for-student checkbox on quiz screen", async ({ pag
   const quizTitle = `E2E Manager Quiz ${suffix}`;
   const questionText = "Manager toggle hidden question UI test";
 
-  const api = await request.newContext();
+  const api = await createApiContext();
+  const signupDisclaimer = await apiJson(api, "GET", "/api/auth/signup-disclaimer");
+  const signupDisclaimerId = Number(signupDisclaimer?.general?.DisclaimerId || 0) || undefined;
 
   // Seed test data through API
   await apiJson(api, "POST", "/api/auth/signup", {
@@ -41,6 +22,8 @@ test("manager can toggle hide-for-student checkbox on quiz screen", async ({ pag
     email: managerEmail,
     fullName: `Manager ${suffix}`,
     password: managerPassword,
+    disclaimerAcknowledged: true,
+    ...(signupDisclaimerId ? { disclaimerId: signupDisclaimerId } : {}),
   });
   const managerLogin = await apiJson(api, "POST", "/api/auth/login", {
     identifier: managerEmail,
@@ -79,6 +62,9 @@ test("manager can toggle hide-for-student checkbox on quiz screen", async ({ pag
   const classId = Number(createdClass.classId);
   expect(classId).toBeGreaterThan(0);
 
+  const activeDisclaimers = await apiJson(api, "GET", "/api/disclaimers/active", null, managerToken);
+  const manualDisclaimerId = Number(activeDisclaimers?.manual?.DisclaimerId || 0);
+  expect(manualDisclaimerId).toBeGreaterThan(0);
   const createdQuiz = await apiJson(
     api,
     "POST",
@@ -86,6 +72,8 @@ test("manager can toggle hide-for-student checkbox on quiz screen", async ({ pag
     {
       title: quizTitle,
       description: "Manager UI toggle test",
+      disclaimerAcknowledged: true,
+      disclaimerId: manualDisclaimerId,
     },
     managerToken
   );
@@ -129,10 +117,12 @@ test("manager can toggle hide-for-student checkbox on quiz screen", async ({ pag
   await expect(hideCheckbox).not.toBeChecked();
 
   await hideCheckbox.click();
-  await expect(page.getByText("Hidden for students (manager preview only)")).toBeVisible();
   await expect(hideCheckbox).toBeChecked();
+  await expect(page.getByText("Hidden for students (teacher preview only)")).toBeVisible();
+  await expect(page.getByLabel("A. Option 1")).toBeDisabled();
 
   await hideCheckbox.click();
-  await expect(page.getByText("Hidden for students (manager preview only)")).toHaveCount(0);
   await expect(hideCheckbox).not.toBeChecked();
+  await expect(page.getByText("Hidden for students (teacher preview only)")).toHaveCount(0);
+  await expect(page.getByLabel("A. Option 1")).toBeEnabled();
 });

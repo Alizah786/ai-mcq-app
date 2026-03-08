@@ -1,26 +1,5 @@
-import { test, expect, request } from "@playwright/test";
-
-const API_BASE = process.env.E2E_API_URL || "http://127.0.0.1:4000";
-
-function uid() {
-  return `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-}
-
-async function apiJson(ctx, method, path, body, token) {
-  const res = await ctx.fetch(`${API_BASE}${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    data: body ?? undefined,
-  });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(`${method} ${path} failed (${res.status()}): ${JSON.stringify(payload)}`);
-  }
-  return payload;
-}
+import { test, expect } from "@playwright/test";
+import { apiJson, createApiContext, uid } from "./helpers";
 
 test("disclaimer acknowledgment is required before quiz submit", async ({ page }) => {
   const suffix = uid();
@@ -33,7 +12,9 @@ test("disclaimer acknowledgment is required before quiz submit", async ({ page }
   const quizTitle = `E2E Disclaimer Quiz ${suffix}`;
   const questionText = "Disclaimer flow validation question";
 
-  const api = await request.newContext();
+  const api = await createApiContext();
+  const signupDisclaimer = await apiJson(api, "GET", "/api/auth/signup-disclaimer");
+  const signupDisclaimerId = Number(signupDisclaimer?.general?.DisclaimerId || 0) || undefined;
 
   // 1) Setup manager + student + class + published quiz by API
   await apiJson(api, "POST", "/api/auth/signup", {
@@ -41,6 +22,8 @@ test("disclaimer acknowledgment is required before quiz submit", async ({ page }
     email: managerEmail,
     fullName: `Manager ${suffix}`,
     password: managerPassword,
+    disclaimerAcknowledged: true,
+    ...(signupDisclaimerId ? { disclaimerId: signupDisclaimerId } : {}),
   });
   const managerLogin = await apiJson(api, "POST", "/api/auth/login", {
     identifier: managerEmail,
@@ -79,6 +62,9 @@ test("disclaimer acknowledgment is required before quiz submit", async ({ page }
   const classId = Number(createdClass.classId);
   expect(classId).toBeGreaterThan(0);
 
+  const activeDisclaimers = await apiJson(api, "GET", "/api/disclaimers/active", null, managerToken);
+  const manualDisclaimerId = Number(activeDisclaimers?.manual?.DisclaimerId || 0);
+  expect(manualDisclaimerId).toBeGreaterThan(0);
   const createdQuiz = await apiJson(
     api,
     "POST",
@@ -86,6 +72,8 @@ test("disclaimer acknowledgment is required before quiz submit", async ({ page }
     {
       title: quizTitle,
       description: "Quiz for disclaimer acknowledgment E2E test",
+      disclaimerAcknowledged: true,
+      disclaimerId: manualDisclaimerId,
     },
     managerToken
   );
@@ -144,10 +132,10 @@ test("disclaimer acknowledgment is required before quiz submit", async ({ page }
   // Refresh to start a new attempt with persisted acknowledgment state
   await page.reload();
   await expect(page.getByText(questionText, { exact: false })).toBeVisible();
-  await expect(submitButton).toBeEnabled();
 
   // 5) Select answer and submit
   await page.getByLabel("A. Correct Option").check();
+  await expect(submitButton).toBeEnabled();
   await submitButton.click();
 
   // 6) Result should be shown
