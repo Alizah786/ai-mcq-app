@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useAuth } from "../context/AuthContext";
 import { apiGet, apiPost, apiPut } from "../api/http";
 import { useUIText } from "../context/UITextContext";
@@ -18,6 +19,7 @@ import {
   isStudentQuizComplete,
   orderQuizQuestions,
 } from "./quizUtils";
+import { getRoleCode } from "../utils/domainCodes";
 
 function normalizeExportQuestionText(value) {
   return String(value || "")
@@ -63,7 +65,48 @@ function dedupeQuestionsForExport(questions = []) {
   });
 }
 
+function dedupeQuizQuestions(questions = []) {
+  const seen = new Set();
+  return (questions || []).filter((question) => {
+    const signature = buildExportQuestionSignature(question);
+    if (!signature) return true;
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+}
+
+function sanitizeQuizPayload(quiz) {
+  if (!quiz || typeof quiz !== "object") return quiz;
+  return {
+    ...quiz,
+    questions: dedupeQuizQuestions(Array.isArray(quiz.questions) ? quiz.questions : []),
+  };
+}
+
+function isArcadeSuitableQuestion(question) {
+  const qType = String(question?.questionType || "MCQ").toUpperCase();
+  if (qType !== "MCQ" && qType !== "TRUE_FALSE") return false;
+
+  const questionText = String(question?.questionText || "").trim();
+  const options = Array.isArray(question?.options) ? question.options : [];
+  if (!questionText || questionText.length > 140) return false;
+  if (options.length < 2 || options.length > 6) return false;
+
+  const totalOptionTextLength = options.reduce(
+    (sum, option) => sum + String(option?.text || "").trim().length,
+    0
+  );
+  if (totalOptionTextLength > 240) return false;
+
+  return options.every((option) => {
+    const optionText = String(option?.text || "").trim();
+    return !!optionText && optionText.length <= 80;
+  });
+}
+
 function MermaidDiagram({ code }) {
+  const { t } = useTranslation();
   const [svg, setSvg] = useState("");
   const [renderErr, setRenderErr] = useState("");
 
@@ -103,7 +146,7 @@ function MermaidDiagram({ code }) {
   }
 
   if (!svg) {
-    return <div style={{ color: "#6b7280", fontSize: 13 }}>Rendering diagram...</div>;
+    return <div style={{ color: "#6b7280", fontSize: 13 }}>{t("quiz.renderingDiagram", "Rendering diagram...")}</div>;
   }
 
   return (
@@ -120,6 +163,7 @@ export default function Quiz() {
   const [searchParams] = useSearchParams();
   const { isManager, selectedStudentId, user } = useAuth();
   const { loadCategoryKeys, t, msg } = useUIText();
+  const { t: ti18n } = useTranslation();
   const exportRef = useRef(null);
   const exportHeaderRef = useRef(null);
   const exportQuestionRefs = useRef(new Map());
@@ -155,7 +199,7 @@ export default function Quiz() {
 
   const showResults = Boolean(result);
   const isAssignedStudent =
-    user?.role === "Student" &&
+    getRoleCode(user) === "STUDENT" &&
     Number(user?.managerId || 0) > 0 &&
     !user?.isDirectStudent;
   const allowRevealAfterSubmit = !!quiz?.revealAnswersAfterSubmit;
@@ -164,7 +208,7 @@ export default function Quiz() {
     (isManager || (allowRevealAfterSubmit && Number(attemptsRemaining || 0) === 0));
   const isFreePlan = !!subscription && (!!subscription.isTrial || Number(subscription.price || 0) <= 0);
   const hintLockedForFreePlan = !isManager && isFreePlan && !!subscription?.lockHintForFreePlan;
-  const studentWatermarkExport = !isManager && user?.role === "Student" && isFreePlan;
+  const studentWatermarkExport = !isManager && getRoleCode(user) === "STUDENT" && isFreePlan;
   const pdfLockedForFreePlan = !studentWatermarkExport && !isManager && isFreePlan && !!subscription?.lockPdfForFreePlan;
 
   useEffect(() => {
@@ -218,7 +262,7 @@ export default function Quiz() {
     if (normalized === "SHORT_TEXT") return t("quiz.questionType.short", "Short");
     if (normalized === "TRUE_FALSE") return t("quiz.questionType.trueFalse", "True/False");
     if (normalized === "NUMERIC") return t("quiz.questionType.numeric", "Numeric");
-    if (normalized === "MIX_MATCH_DRAG") return "Match";
+    if (normalized === "MIX_MATCH_DRAG") return ti18n("quiz.questionType.match", "Match");
     if (normalized === "LONG") return t("quiz.questionType.long", "Long");
     return normalized;
   }
@@ -230,7 +274,7 @@ export default function Quiz() {
     if (!resolvedAttemptId) return false;
     const resultData = await apiGet(`/api/attempts/${resolvedAttemptId}/result`);
     setAttemptId(resolvedAttemptId);
-    if (quizData) setQuiz(quizData);
+    if (quizData) setQuiz(sanitizeQuizPayload(quizData));
     setAttemptLimit(Number(resultData?.attemptLimit || limit || 1));
     setAttemptsRemaining(Number(resultData?.attemptsRemaining || 0));
     setAttemptSummary(Array.isArray(resultData?.attemptSummary) ? resultData.attemptSummary : submitted);
@@ -257,7 +301,7 @@ export default function Quiz() {
           const draftQuiz = await apiGet(`/api/quizzes/${quizId}`);
           if (!alive) return;
           setAttemptId(null);
-          setQuiz(draftQuiz || null);
+          setQuiz(sanitizeQuizPayload(draftQuiz || null));
           setAttemptLimit(1);
           setAttemptsRemaining(0);
           setAttemptSummary([]);
@@ -278,12 +322,12 @@ export default function Quiz() {
         if (!data?.quiz?.questions?.length) {
           setErr(msg("quiz.noQuestions.error", "Quiz has no questions yet. Add questions before attempting."));
           setAttemptId(data?.attemptId ?? null);
-          setQuiz(data?.quiz ?? null);
+          setQuiz(sanitizeQuizPayload(data?.quiz ?? null));
           return;
         }
 
         setAttemptId(data.attemptId);
-        setQuiz(data.quiz);
+        setQuiz(sanitizeQuizPayload(data.quiz));
         setAttemptLimit(Number(data.attemptLimit || 1));
         setAttemptsRemaining(Number(data.attemptsRemaining || 0));
         setAttemptSummary(Array.isArray(data.attemptSummary) ? data.attemptSummary : []);
@@ -399,6 +443,10 @@ export default function Quiz() {
   const isAssignmentQuiz = String(quiz?.assessmentType || "").toUpperCase() === "ASSIGNMENT";
   const canAttemptSubmit = !isAssignmentQuiz && !!quiz?.questions?.length;
   const orderedQuestions = orderQuizQuestions(quiz?.questions);
+  const arcadeEligible =
+    !isAssignmentQuiz &&
+    !!orderedQuestions.length &&
+    orderedQuestions.every((question) => isArcadeSuitableQuestion(question));
   useEffect(() => {
     if (!orderedQuestions.length) {
       setCurrentQuestionIndex(0);
@@ -516,7 +564,7 @@ export default function Quiz() {
       const studentQuery = isManager && selectedStudentId ? `?studentId=${selectedStudentId}` : "";
       const data = await apiPost(`/api/quizzes/${quizId}/attempts/start${studentQuery}`, {});
       setAttemptId(data.attemptId);
-      setQuiz(data.quiz);
+      setQuiz(sanitizeQuizPayload(data.quiz));
       setAttemptLimit(Number(data.attemptLimit || 1));
       setAttemptsRemaining(Number(data.attemptsRemaining || 0));
       setAttemptSummary(Array.isArray(data.attemptSummary) ? data.attemptSummary : []);
@@ -740,9 +788,8 @@ export default function Quiz() {
         .replace(/[\\/:*?"<>|]/g, "")
         .replace(/\s+/g, "_")
         .slice(0, 60);
-      const phase = result ? "solved" : "preview";
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      pdf.save(`${safeTitle}_attempt_${attemptId || "na"}_${phase}_${stamp}.pdf`);
+      pdf.save(`${safeTitle}_${stamp}.pdf`);
     } catch (e) {
       setErr(e.message || "Failed to export PDF");
     } finally {
@@ -844,7 +891,7 @@ export default function Quiz() {
               cursor: "pointer",
             }}
           >
-            {"< Back to Dashboard"}
+            {ti18n("common.backToDashboard", "< Back to Dashboard")}
           </button>
         </div>
       )}
@@ -869,7 +916,7 @@ export default function Quiz() {
           <div style={{ textAlign: assignmentExportMode ? "left" : "center", fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 16, lineHeight: 1.45, marginBottom: 18 }}>
             {exportExtraHeaderLines.map((line, index) => (
               <div key={`header-extra-line-${index}`}>
-                {assignmentExportMode && index === 0 ? <b>Instructions:</b> : null}
+                {assignmentExportMode && index === 0 ? <b>{ti18n("quiz.instructions", "Instructions")}:</b> : null}
                 {assignmentExportMode && index === 0 ? " " : ""}
                 {line}
               </div>
@@ -882,11 +929,21 @@ export default function Quiz() {
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
               <StatusPill tone="accent">{getExportHeadingTitle(quiz.title, isAssignment)}</StatusPill>
               <StatusPill tone="neutral">
-                Attempts: {Math.max(0, Number(attemptLimit || 1) - Number(attemptsRemaining || 0))}/{Number(attemptLimit || 1)}
+                {ti18n("quiz.attempts", "Attempts")}: {Math.max(0, Number(attemptLimit || 1) - Number(attemptsRemaining || 0))}/{Number(attemptLimit || 1)}
               </StatusPill>
-              {quiz?.createDate ? <StatusPill tone="neutral">Created: {formatDateTime(quiz.createDate)}</StatusPill> : null}
+              {quiz?.createDate ? <StatusPill tone="neutral">{ti18n("quiz.created", "Created")}: {formatDateTime(quiz.createDate)}</StatusPill> : null}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              {!showResults && arcadeEligible && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => navigate(`/quiz/${quizId}/arcade`)}
+                >
+                  {ti18n("quiz.arcade.button", "Arcade Mode")}
+                </Button>
+              )}
               {!showResults && (
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 15, fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>
                   <input
@@ -897,11 +954,11 @@ export default function Quiz() {
                       setCurrentQuestionIndex(0);
                     }}
                   />
-                  One question at a time
+                  {ti18n("quiz.oneQuestionAtATime", "One question at a time")}
                 </label>
               )}
               <div style={{ color: "var(--text-muted)", fontSize: 13, whiteSpace: "nowrap" }}>
-                Session: quiz {quizId} • attempt {attemptId}
+                {ti18n("quiz.session", "Session")}: quiz {quizId} • attempt {attemptId}
               </div>
             </div>
           </div>
@@ -953,8 +1010,8 @@ export default function Quiz() {
       {showResults && !revealCorrectAnswers && !exportDocumentMode && (
         <InlineAlert tone="warning" style={{ marginBottom: 12, fontWeight: 600 }}>
           {allowRevealAfterSubmit
-            ? "Correct answers will be shown after all attempts are completed."
-            : "Correct answers are hidden for this quiz."}
+            ? ti18n("quiz.correctAnswersAfterAttempts", "Correct answers will be shown after all attempts are completed.")
+            : ti18n("quiz.correctAnswersHidden", "Correct answers are hidden for this quiz.")}
         </InlineAlert>
       )}
       {confirmIncompleteSubmitOpen && !exportDocumentMode && (
@@ -968,7 +1025,7 @@ export default function Quiz() {
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <div style={{ color: "#9a3412", fontSize: 14, fontWeight: 700 }}>
-              Quiz is not completed yet. Do you still want to submit?
+              {ti18n("quiz.confirmIncomplete", "Quiz is not completed yet. Do you still want to submit?")}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Button
@@ -987,7 +1044,7 @@ export default function Quiz() {
                   handleSubmit(true);
                 }}
               >
-                Submit Anyway
+                {ti18n("quiz.submitAnyway", "Submit Anyway")}
               </Button>
             </div>
           </div>
@@ -997,7 +1054,7 @@ export default function Quiz() {
         <Card tone="subtle" padding="sm" style={{ marginBottom: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 12 }}>
             <div style={{ color: "#1e293b", fontSize: 18, fontWeight: 800, lineHeight: 1.2 }}>
-              Question {currentQuestionIndex + 1} of {orderedQuestions.length}
+              {ti18n("quiz.questionOf", "Question {{current}} of {{total}}", { current: currentQuestionIndex + 1, total: orderedQuestions.length })}
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
               <Button
@@ -1007,7 +1064,7 @@ export default function Quiz() {
                 onClick={() => setCurrentQuestionIndex((prev) => Math.max(0, prev - 1))}
                 style={{ minWidth: 88, fontWeight: 800, padding: "10px 18px" }}
               >
-                Back
+                {ti18n("common.back", "Back")}
               </Button>
               <Button
                 type="button"
@@ -1016,7 +1073,7 @@ export default function Quiz() {
                 onClick={() => setCurrentQuestionIndex((prev) => Math.min(orderedQuestions.length - 1, prev + 1))}
                 style={{ minWidth: 88, fontWeight: 800, padding: "10px 18px" }}
               >
-                Next
+                {ti18n("common.next", "Next")}
               </Button>
             </div>
             <div />
@@ -1122,7 +1179,7 @@ export default function Quiz() {
                             disabled={!!visibilityBusy[q.questionId]}
                             onChange={(e) => handleQuestionVisibility(q.questionId, e.target.checked)}
                           />
-                          Hide this question for students
+                          {ti18n("quiz.hideForStudents", "Hide this question for students")}
                         </label>
                       )}
                     </div>
@@ -1261,7 +1318,7 @@ export default function Quiz() {
                                   aria-label={`Select match for ${item.leftText}`}
                                   style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid #d1d5db", background: "#fff" }}
                                 >
-                                  <option value="">Select matching item</option>
+                                  <option value="">{ti18n("quiz.match.select", "Select matching item")}</option>
                                   {(q.rightItems || []).map((rightItem) => {
                                     const assignedLeftId = Object.entries(matchMap).find(([, value]) => Number(value) === Number(rightItem.rightMatchPairId))?.[0] || null;
                                     const assignedElsewhere = assignedLeftId && Number(assignedLeftId) !== Number(item.leftMatchPairId);
@@ -1274,14 +1331,14 @@ export default function Quiz() {
                                 </select>
                                 {!!selectedRightItem && !showResults && (
                                   <div style={{ marginTop: 8, fontSize: 13, color: "#475569" }}>
-                                    Selected: <b>{selectedRightItem.rightText}</b>
+                                    {ti18n("quiz.match.selected", "Selected")}: <b>{selectedRightItem.rightText}</b>
                                   </div>
                                 )}
                                 {showResults && (
                                   <div style={{ marginTop: 8, fontSize: 13, color: statusColor }}>
-                                    Your match: <b>{resultPair?.selectedRightText || "-"}</b>
+                                    {ti18n("quiz.match.yourMatch", "Your match")}: <b>{resultPair?.selectedRightText || "-"}</b>
                                     {" | "}
-                                    Correct: <b>{resultPair?.correctRightText || "-"}</b>
+                                    {ti18n("quiz.match.correct", "Correct")}: <b>{resultPair?.correctRightText || "-"}</b>
                                   </div>
                                 )}
                               </div>
@@ -1302,7 +1359,7 @@ export default function Quiz() {
                     </div>
                     {!!(q.rightItems || []).length && !showResults && (
                       <div style={{ marginTop: 12, border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#f8fafc" }}>
-                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Right-side options</div>
+                        <div style={{ fontWeight: 700, marginBottom: 8 }}>{ti18n("quiz.match.rightSideOptions", "Right-side options")}</div>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                           {(q.rightItems || []).map((rightItem) => (
                             <div
@@ -1335,7 +1392,7 @@ export default function Quiz() {
                       value={answers[q.questionId]?.numberAnswer ?? ""}
                       onChange={(e) => onNumberAnswer(q.questionId, e.target.value)}
                       disabled={showResults || managerHiddenPreview}
-                      placeholder={t("quiz.answer.numeric.placeholder", "Enter numeric answer")}
+                      placeholder={ti18n("quiz.answer.numeric.placeholder", "Enter numeric answer")}
                       style={{
                         width: "100%",
                         boxSizing: "border-box",
@@ -1347,12 +1404,12 @@ export default function Quiz() {
                     />
                     {showResults && (
                       <div style={{ marginTop: 8, color: "#374151", fontSize: 14 }}>
-                        Your answer: <b>{detail?.selectedNumberAnswer ?? "-"}</b>
+                        {ti18n("quiz.yourAnswer", "Your answer")}: <b>{detail?.selectedNumberAnswer ?? "-"}</b>
                       </div>
                     )}
                     {showResults && revealCorrectAnswers && (
                       <div style={{ marginTop: 6, color: "#065f46", fontSize: 14 }}>
-                        Correct answer: <b>{detail?.expectedAnswerNumber ?? "-"}</b>
+                        {ti18n("quiz.correctAnswer", "Correct answer")}: <b>{detail?.expectedAnswerNumber ?? "-"}</b>
                       </div>
                     )}
                   </div>
@@ -1362,7 +1419,7 @@ export default function Quiz() {
                       value={answers[q.questionId]?.textAnswer ?? ""}
                       onChange={(e) => onTextAnswer(q.questionId, e.target.value.slice(0, 8000))}
                       disabled={showResults || managerHiddenPreview}
-                      placeholder={t("quiz.answer.long.placeholder", "Write your answer")}
+                      placeholder={ti18n("quiz.answer.long.placeholder", "Write your answer")}
                       rows={7}
                       style={{
                         width: "100%",
@@ -1379,18 +1436,18 @@ export default function Quiz() {
                     </div>
                     {showResults && (
                       <div style={{ marginTop: 8, color: "#374151", fontSize: 14 }}>
-                        Your answer: <b>{detail?.selectedTextAnswer || "-"}</b>
+                        {ti18n("quiz.yourAnswer", "Your answer")}: <b>{detail?.selectedTextAnswer || "-"}</b>
                       </div>
                     )}
                     {showResults && detail?.autoScore != null && (
                       <div style={{ marginTop: 8, color: "#065f46", fontSize: 14 }}>
-                        AI score: <b>{detail.autoScore}</b>
+                        {ti18n("quiz.aiScore", "AI score")}: <b>{detail.autoScore}</b>
                         {detail?.autoFeedback ? ` - ${detail.autoFeedback}` : ""}
                       </div>
                     )}
                     {showResults && detail?.isTeacherOverridden && detail?.teacherOverrideScore != null && (
                       <div style={{ marginTop: 6, color: "#1d4ed8", fontSize: 14 }}>
-                        Teacher override: <b>{detail.teacherOverrideScore}</b>
+                        {ti18n("quiz.teacherOverride", "Teacher override")}: <b>{detail.teacherOverrideScore}</b>
                         {detail?.teacherOverrideFeedback ? ` - ${detail.teacherOverrideFeedback}` : ""}
                       </div>
                     )}
@@ -1402,7 +1459,7 @@ export default function Quiz() {
                       value={answers[q.questionId]?.textAnswer ?? ""}
                       onChange={(e) => onTextAnswer(q.questionId, e.target.value)}
                       disabled={showResults || managerHiddenPreview}
-                      placeholder={t("quiz.answer.short.placeholder", "Enter short answer")}
+                      placeholder={ti18n("quiz.answer.short.placeholder", "Enter short answer")}
                       style={{
                         width: "100%",
                         boxSizing: "border-box",
@@ -1414,12 +1471,12 @@ export default function Quiz() {
                     />
                     {showResults && (
                       <div style={{ marginTop: 8, color: "#374151", fontSize: 14 }}>
-                        Your answer: <b>{detail?.selectedTextAnswer || "-"}</b>
+                        {ti18n("quiz.yourAnswer", "Your answer")}: <b>{detail?.selectedTextAnswer || "-"}</b>
                       </div>
                     )}
                     {showResults && revealCorrectAnswers && (
                       <div style={{ marginTop: 6, color: "#065f46", fontSize: 14 }}>
-                        Correct answer: <b>{detail?.expectedAnswerText || "-"}</b>
+                        {ti18n("quiz.correctAnswer", "Correct answer")}: <b>{detail?.expectedAnswerText || "-"}</b>
                       </div>
                     )}
                   </div>
