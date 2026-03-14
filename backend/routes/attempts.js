@@ -11,6 +11,7 @@ const {
   refreshAttemptScore,
 } = require("../services/longGradingService");
 const { logUsageEventByActor } = require("../services/usageEvents");
+const { getLegacySubscriptionRole, normalizeUserRole } = require("../services/domainCodes");
 
 const router = express.Router();
 
@@ -31,11 +32,19 @@ async function managerOwnsStudent(managerId, studentId) {
 }
 
 async function resolveAttemptStudentId(req, studentIdRaw) {
-  if (req.user.role !== "Manager") return req.user.userId;
+  if (normalizeUserRole(req.user.roleCode || req.user.role) !== "TEACHER") return req.user.userId;
   const studentId = Number(studentIdRaw);
   if (!Number.isFinite(studentId) || studentId <= 0) return null;
   const owns = await managerOwnsStudent(req.user.userId, studentId);
   return owns ? studentId : null;
+}
+
+function roleCode(req) {
+  return normalizeUserRole(req.user?.roleCode || req.user?.role);
+}
+
+function legacyRole(req) {
+  return getLegacySubscriptionRole(req.user?.roleCode || req.user?.role);
 }
 
 function toPositiveInt(value) {
@@ -110,19 +119,7 @@ async function getAttemptSummaryForQuiz(quizId, studentId) {
 }
 
 async function loadQuizStartData(quizId, role, studentId, managerId) {
-  try {
-    return await execQuery(
-      "EXEC dbo.usp_QuizAttempt_LoadStartData @QuizId, @Role, @StudentId, @ManagerId",
-      [
-        { name: "QuizId", type: TYPES.Int, value: quizId },
-        { name: "Role", type: TYPES.NVarChar, value: role },
-        { name: "StudentId", type: TYPES.Int, value: studentId },
-        { name: "ManagerId", type: TYPES.Int, value: managerId },
-      ]
-    );
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function formatNullableNumber(value) {
@@ -477,7 +474,7 @@ router.get("/attempts/mine", async (req, res) => {
 
 /** GET /api/reports/quiz-performance - manager report with optional class/student/quiz filters */
 router.get("/reports/quiz-performance", async (req, res) => {
-  if (req.user.role !== "Manager") {
+  if (roleCode(req) !== "TEACHER") {
     return res.status(403).json({ message: "Only teacher can access reports." });
   }
 
@@ -567,6 +564,7 @@ router.get("/reports/quiz-performance", async (req, res) => {
 router.post("/quizzes/:quizId/attempts/start", async (req, res) => {
   const quizIdNum = parseInt(req.params.quizId, 10);
   const attemptStudentId = await resolveAttemptStudentId(req, req.query.studentId);
+  const arcadeMode = String(req.query.mode || "").toLowerCase() === "arcade";
   if (!attemptStudentId) {
     return res.status(400).json({ message: "Valid studentId is required for manager attempts." });
   }
@@ -587,7 +585,7 @@ router.post("/quizzes/:quizId/attempts/start", async (req, res) => {
     const submittedAttempts = attemptSummary.filter((a) => a.submitted);
     const inProgressAttempt = attemptSummary.find((a) => !a.submitted) || null;
     const assessmentType = await loadQuizAssessmentType(quizIdNum).catch(() => "QUIZ");
-    if (assessmentType === "ASSIGNMENT" && req.user.role === "Student") {
+    if (assessmentType === "ASSIGNMENT" && roleCode(req) === "STUDENT") {
       return res.status(400).json({ message: "This assignment is PDF-only. Online attempt is disabled.", errorCode: "ASSIGNMENT_PDF_ONLY" });
     }
 
@@ -612,8 +610,8 @@ router.post("/quizzes/:quizId/attempts/start", async (req, res) => {
       attemptId = createdAttempt.rows[0].AttemptId;
       startedAtUtc = createdAttempt.rows[0].StartedAtUtc || null;
       logUsageEventByActor({
-        role: req.user.role,
-        userId: req.user.role === "Manager" ? req.user.userId : attemptStudentId,
+        role: legacyRole(req),
+        userId: roleCode(req) === "TEACHER" ? req.user.userId : attemptStudentId,
         eventType: "QUIZ_ATTEMPT",
         quantity: 1,
       }).catch(() => {});
@@ -668,6 +666,31 @@ router.post("/quizzes/:quizId/attempts/start", async (req, res) => {
           label: ["A", "B", "C", "D", "E", "F"][optionIndex] || String(optionIndex + 1),
           text: row.ChoiceText,
         });
+      }
+    }
+
+    if (arcadeMode && questionMap.size) {
+      const questionIds = Array.from(questionMap.keys()).filter((id) => Number.isFinite(Number(id)));
+      const correctChoiceRows = await execQuery(
+        `SELECT QuestionId, ChoiceId, IsCorrect
+         FROM dbo.QuizChoice
+         WHERE QuestionId IN (${questionIds.map((_, index) => `@qid${index}`).join(", ")})`,
+        questionIds.map((questionId, index) => ({ name: `qid${index}`, type: TYPES.Int, value: Number(questionId) }))
+      ).catch(() => ({ rows: [] }));
+
+      const correctByQuestionId = new Map();
+      for (const row of correctChoiceRows.rows || []) {
+        const questionId = Number(row.QuestionId);
+        if (!correctByQuestionId.has(questionId)) correctByQuestionId.set(questionId, new Map());
+        correctByQuestionId.get(questionId).set(Number(row.ChoiceId), !!row.IsCorrect);
+      }
+
+      for (const question of questionMap.values()) {
+        const optionFlags = correctByQuestionId.get(Number(question.questionId)) || new Map();
+        question.options = (question.options || []).map((option) => ({
+          ...option,
+          isCorrect: !!optionFlags.get(Number(option.optionId)),
+        }));
       }
     }
 
@@ -814,7 +837,7 @@ router.post("/quizzes/:quizId/attempts/start", async (req, res) => {
   const headerExtraLines = await loadQuizHeaderExtraLines(quizIdNum).catch(() => []);
   const classExportSettings = await loadQuizClassExportSettings(quizIdNum).catch(() => defaultClassExportSettings());
   const assessmentType = await loadQuizAssessmentType(quizIdNum).catch(() => "QUIZ");
-  if (assessmentType === "ASSIGNMENT" && req.user.role === "Student") {
+  if (assessmentType === "ASSIGNMENT" && roleCode(req) === "STUDENT") {
     return res.status(400).json({ message: "This assignment is PDF-only. Online attempt is disabled.", errorCode: "ASSIGNMENT_PDF_ONLY" });
   }
 
@@ -862,8 +885,8 @@ router.post("/quizzes/:quizId/attempts/start", async (req, res) => {
     attemptId = createdAttempt.rows[0].AttemptId;
     startedAtUtc = createdAttempt.rows[0].StartedAtUtc || null;
     logUsageEventByActor({
-      role: req.user.role,
-      userId: req.user.role === "Manager" ? req.user.userId : attemptStudentId,
+      role: legacyRole(req),
+      userId: roleCode(req) === "TEACHER" ? req.user.userId : attemptStudentId,
       eventType: "QUIZ_ATTEMPT",
       quantity: 1,
     }).catch(() => {});
@@ -921,6 +944,39 @@ router.post("/quizzes/:quizId/attempts/start", async (req, res) => {
       points: Number(q.Points || 1),
       isHiddenForStudent: !!q.IsHiddenForStudent,
       options: options.rows.map((o, i) => ({ optionId: o.ChoiceId, label: ["A", "B", "C", "D", "E", "F"][i] || String(i + 1), text: o.ChoiceText })),
+    });
+  }
+  if (arcadeMode && quiz.questions.length) {
+    const questionIds = quiz.questions
+      .map((question) => Number(question.questionId))
+      .filter((questionId) => Number.isFinite(questionId));
+    const correctChoiceRows = await execQuery(
+      `SELECT QuestionId, ChoiceId, IsCorrect
+       FROM dbo.QuizChoice
+       WHERE QuestionId IN (${questionIds.map((_, index) => `@qid${index}`).join(", ")})`,
+      questionIds.map((questionId, index) => ({
+        name: `qid${index}`,
+        type: TYPES.Int,
+        value: Number(questionId),
+      }))
+    ).catch(() => ({ rows: [] }));
+
+    const correctByQuestionId = new Map();
+    for (const row of correctChoiceRows.rows || []) {
+      const questionId = Number(row.QuestionId);
+      if (!correctByQuestionId.has(questionId)) correctByQuestionId.set(questionId, new Map());
+      correctByQuestionId.get(questionId).set(Number(row.ChoiceId), !!row.IsCorrect);
+    }
+
+    quiz.questions = quiz.questions.map((question) => {
+      const optionFlags = correctByQuestionId.get(Number(question.questionId)) || new Map();
+      return {
+        ...question,
+        options: (question.options || []).map((option) => ({
+          ...option,
+          isCorrect: !!optionFlags.get(Number(option.optionId)),
+        })),
+      };
     });
   }
   const mixMatchMeta = await execQuery(
@@ -995,8 +1051,8 @@ router.post("/attempts/:attemptId/disclaimer-ack", async (req, res) => {
   const row = attempt.rows[0];
 
   if (row.SubmittedAtUtc) return res.status(400).json({ message: "Attempt already submitted" });
-  if (req.user.role === "Student" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
-  if (req.user.role === "Manager") {
+  if (roleCode(req) === "STUDENT" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
+  if (roleCode(req) === "TEACHER") {
     const owns = await managerOwnsStudent(req.user.userId, row.StudentId);
     if (!owns) return res.status(403).json({ message: "Forbidden" });
   }
@@ -1022,8 +1078,8 @@ router.post("/attempts/:attemptId/answers", async (req, res) => {
   if (!attempt.rows.length) return res.status(404).json({ message: "Attempt not found" });
   const row = attempt.rows[0];
   if (row.SubmittedAtUtc) return res.status(400).json({ message: "Attempt already submitted" });
-  if (req.user.role === "Student" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
-  if (req.user.role === "Manager") {
+  if (roleCode(req) === "STUDENT" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
+  if (roleCode(req) === "TEACHER") {
     const owns = await managerOwnsStudent(req.user.userId, row.StudentId);
     if (!owns) return res.status(403).json({ message: "Forbidden" });
   }
@@ -1112,8 +1168,8 @@ router.post("/attempts/:attemptId/submit", async (req, res) => {
   );
   if (!attempt.rows.length) return res.status(404).json({ message: "Attempt not found" });
   const row = attempt.rows[0];
-  if (req.user.role === "Student" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
-  if (req.user.role === "Manager") {
+  if (roleCode(req) === "STUDENT" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
+  if (roleCode(req) === "TEACHER") {
     const owns = await managerOwnsStudent(req.user.userId, row.StudentId);
     if (!owns) return res.status(403).json({ message: "Forbidden" });
   }
@@ -1185,7 +1241,11 @@ router.post("/attempts/:attemptId/submit", async (req, res) => {
     } else if (questionType === "LONG") {
       textAnswer = String(answerRow?.textAnswer || "").slice(0, 8000);
       if (!textAnswer.trim()) {
-        return res.status(400).json({ message: "Please answer all long questions before submitting." });
+        return res.status(400).json({
+          message: req.locale === "fr-CA"
+            ? "Veuillez repondre a toutes les questions longues avant de soumettre."
+            : "Please answer all long questions before submitting.",
+        });
       }
       isAutoEvaluated = false;
       isCorrect = false;
@@ -1393,7 +1453,7 @@ router.post("/internal/grade/long", async (req, res) => {
 
 /** PUT /api/attempts/:attemptId/answers/:attemptAnswerId/override - teacher override for LONG score. */
 router.put("/attempts/:attemptId/answers/:attemptAnswerId/override", async (req, res) => {
-  if (req.user.role !== "Manager") return res.status(403).json({ message: "Only teacher can override long answer marks." });
+  if (roleCode(req) !== "TEACHER") return res.status(403).json({ message: "Only teacher can override long answer marks." });
   const attemptIdNum = parseInt(req.params.attemptId, 10);
   const answerIdNum = parseInt(req.params.attemptAnswerId, 10);
   if (!Number.isFinite(attemptIdNum) || !Number.isFinite(answerIdNum)) {
@@ -1464,8 +1524,8 @@ router.get("/attempts/:attemptId/result", async (req, res) => {
   );
   if (!attempt.rows.length) return res.status(404).json({ message: "Attempt not found" });
   const row = attempt.rows[0];
-  if (req.user.role === "Student" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
-  if (req.user.role === "Manager") {
+  if (roleCode(req) === "STUDENT" && row.StudentId !== req.user.userId) return res.status(403).json({ message: "Forbidden" });
+  if (roleCode(req) === "TEACHER") {
     const owns = await managerOwnsStudent(req.user.userId, row.StudentId);
     if (!owns) return res.status(403).json({ message: "Forbidden" });
   }
